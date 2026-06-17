@@ -1,0 +1,15 @@
+typer
+rich
+torch
+transformers
+faiss-cpu
+h5py
+pyarrow
+duckdb
+pandas
+polars
+pydantic
+pydantic-settings
+bm25s
+PyStemmer
+tqdm

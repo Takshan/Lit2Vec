@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=69.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lit2vec"
+description = "Embedding and search-index toolkit for biomedical literature corpora."
+readme = "README.md"
+license = { text = "MIT (c) 2025 Rahul Brahma" }
+authors = [{ name = "Rahul Brahma", email = "rahul.brahma@uni-greifswald.de" }]
+maintainers = [
+    { name = "Rahul Brahma", email = "rahul.brahma@uni-greifswald.de" },
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Natural Language :: English",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+requires-python = ">=3.9,<3.13"
+keywords = [
+    "Python",
+    "MEDLINE",
+    "PubMed",
+    "Biomedical corpus",
+    "Natural Language Processing",
+    "Embeddings",
+    "FAISS",
+    "BM25",
+]
+dependencies = [
+    "typer",
+    "rich",
+    "torch",
+    "transformers<4.50,>=4.40",
+    "accelerate",
+    "xformers",
+    "faiss-cpu",
+    "h5py",
+    "pyarrow",
+    "duckdb",
+    "pandas",
+    "polars",
+    "pydantic",
+    "pydantic_settings",
+    "bm25s",
+    "PyStemmer",
+    "tqdm",
+    "annoy",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+tests = ["pytest", "pytest-cov"]
+docs = ["sphinx", "sphinx_rtd_theme", "sphinx-gallery"]
+
+[project.urls]
+homepage = "https://github.com/takshan/lit2vec"
+download = "https://github.com/takshan/lit2vec.git"
+documentation = "http://takshan.github.io/lit2vec"
+bug_tracker = "https://github.com/takshan/lit2vec/issues"
+
+[tool.setuptools.package-data]
+"lit2vec.data" = ["*.txt"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools_scm]
+
+[project.scripts]
+lit2vec = "lit2vec.main:cli"
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+lit2vec = { path = ".", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+docs = { features = ["docs"], solve-group = "default" }
+tests = { features = ["tests"], solve-group = "default" }
+
+[tool.pixi.tasks]
+
+[tool.pixi.dependencies]
+pip = ">=25.2,<26"
+python = "3.12.*"
+faiss = ">=1.9.0,<2"
+pandas = "==2.3.1"
+bm25s = "==0.2.8"
+faiss-gpu = ">=1.9.0,<2"

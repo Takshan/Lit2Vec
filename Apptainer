@@ -1,0 +1,58 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+Stage: build
+
+
+%files
+    ./Inclusion_system /app/Inclusion_system
+    ./lit2vec /app/lit2vec
+    ./pyproject.toml /app
+    ./renovate.json /app
+    ./requirements.txt /app
+    ./README.md /app
+
+%post
+    # Use POSIX-compatible set flags (dash doesn't support -o pipefail)
+    set -eux
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        g++ \
+        curl \
+        libpq-dev \
+        bzip2 \
+        ca-certificates \
+        bash \
+        && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+
+    # Install micromamba
+    MICROMAMBA_ROOT=/opt/micromamba
+    mkdir -p ${MICROMAMBA_ROOT}/bin
+    curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C ${MICROMAMBA_ROOT}/bin --strip-components=1 bin/micromamba
+    export MAMBA_ROOT_PREFIX=${MICROMAMBA_ROOT}
+    export PATH=${MICROMAMBA_ROOT}/bin:$PATH
+
+    ${MICROMAMBA_ROOT}/bin/micromamba create -y -n vs -c conda-forge python=3.12 pip
+    ${MICROMAMBA_ROOT}/bin/micromamba run -n vs pip install --root-user-action=ignore --no-cache-dir faiss-gpu-cu12
+    ${MICROMAMBA_ROOT}/bin/micromamba run -n vs pip install --root-user-action=ignore --no-cache-dir -r /app/requirements.txt
+    # PyTorch with CUDA is already provided by the base image (pytorch/pytorch:*-cuda*-runtime)
+
+    ${MICROMAMBA_ROOT}/bin/micromamba run -n vs pip install --root-user-action=ignore --no-cache-dir -e /app
+    ${MICROMAMBA_ROOT}/bin/micromamba run -n vs pip install -e .
+
+%environment
+    export MAMBA_ROOT_PREFIX=/opt/micromamba
+    # Ensure micromamba bins and user-level Python scripts are on PATH
+    export PATH=$HOME/.local/bin:/opt/micromamba/bin:/opt/micromamba/envs/vs/bin:$PATH
+    export CONDA_DEFAULT_ENV=vs
+    #export PATH="$HOME/.local/bin:$PATH"
+    # Recommend running with: apptainer run --nv image.sif ...
+
+# %runscript
+#     python -m lit2vec.main
+#     lit2vec
+
+%help
+    This container is a part of the lit2vec package.
+    GPU support enabled via NVIDIA CUDA base image.
+    Run with GPU: apptainer run --nv <image>.sif python -m lit2vec.main
