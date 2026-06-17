@@ -10,6 +10,7 @@ It is designed to consume pre-built datasets (for example produced by [`litsync`
 - Per-year SQLite metadata databases.
 
 Download, XML parsing, and daily-update merging are intentionally **not** part of this package — use `litsync` or another data-preparation tool for those steps.
+<img width="1129" height="797" alt="image" src="https://github.com/user-attachments/assets/dde0ea8a-836d-4bb0-86ba-1a126b688b52" />
 
 ## Repository Structure
 
