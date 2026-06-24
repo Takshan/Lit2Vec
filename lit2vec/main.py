@@ -1,6 +1,6 @@
 import typer
 
-from lit2vec.cli.commands import bm25, embeddings, faiss, pipeline, prepare, sql_index
+from lit2vec.cli.commands import bm25, embeddings, faiss, pipeline, prepare, proctor, sql_index
 from lit2vec.cli.console import print_banner
 
 app = typer.Typer(
@@ -17,6 +17,7 @@ app.command(name="make-bm25-index")(bm25.make_bm25_index)
 app.command(name="make-faiss-index")(faiss.make_faiss_index)
 app.command(name="pipeline")(pipeline.run_pipeline)
 app.command(name="prepare")(prepare.prepare)
+app.command(name="verify")(proctor.verify_output)
 
 # Short aliases
 app.command(name="embed", hidden=True)(embeddings.generate_embeddings)
@@ -25,6 +26,7 @@ app.command(name="bm25", hidden=True)(bm25.make_bm25_index)
 app.command(name="faiss", hidden=True)(faiss.make_faiss_index)
 app.command(name="run", hidden=True)(pipeline.run_pipeline)
 app.command(name="prep", hidden=True)(prepare.prepare)
+app.command(name="proctor", hidden=True)(proctor.verify_output)
 
 
 @app.callback()

@@ -22,7 +22,8 @@ def _no_op_progress(current: int, total: int, message: Optional[str] = None) -> 
 
 def _normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     """Normalize a single litsync JSONL record to the lit2vec schema."""
-    raw_id = record.get("id", "")
+    # litsync records use ``pmid``; fall back to ``id`` for older variants.
+    raw_id = record.get("pmid") if "pmid" in record else record.get("id", "")
     try:
         pmid = int(raw_id)
     except (ValueError, TypeError):
@@ -107,7 +108,7 @@ def prepare_litsync_corpus(
 
     progress_callback = progress_callback or _no_op_progress
 
-    jsonl_files = sorted(corpus_dir.glob("corpus-*.jsonl"))
+    jsonl_files = sorted(corpus_dir.rglob("corpus-*.jsonl"))
     if not jsonl_files:
         raise ValueError(f"No corpus-*.jsonl files found in {corpus_dir}")
 
