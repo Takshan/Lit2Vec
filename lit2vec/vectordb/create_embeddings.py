@@ -95,14 +95,34 @@ def save_single_embedding_to_hdf5(
         f.flush()
 
 
-def _load_config(model_name: str):
-    """Load model config and disable xformers-only settings when CUDA is unavailable.
+def _xformers_cuda_usable() -> bool:
+    """Return True only if xformers is installed and its CUDA/C++ ops load.
 
-    xformers/memory-efficient attention is GPU-only, so on CPU we turn those
-    options off to avoid hard failures during model initialization.
+    The pip wheel for xformers is often built against a different PyTorch/CUDA
+    combination than the one installed (e.g. torch 2.12+cu130 vs xformers built
+    for torch 2.10+cu128). In that case importing xformers prints a warning and
+    the C++/CUDA extensions are unavailable, which causes hard failures inside
+    models that try to use memory-efficient attention.
+    """
+    try:
+        import xformers
+
+        # xformers exposes a flag that is True when C++/CUDA extensions loaded.
+        return bool(getattr(xformers, "_is_op_mod_available", lambda: False)())
+    except Exception:
+        return False
+
+
+def _load_config(model_name: str):
+    """Load model config and disable xformers-only settings when unusable.
+
+    xformers/memory-efficient attention is GPU-only and requires a CUDA-enabled
+    xformers build. If xformers is missing or its C++ extensions cannot load,
+    turn those options off to avoid hard failures during model initialization.
+    PyTorch's native scaled-dot-product attention is used instead.
     """
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or not _xformers_cuda_usable():
         for attr in ("use_memory_efficient_attention", "unpad_inputs"):
             if hasattr(config, attr):
                 setattr(config, attr, False)
@@ -155,24 +175,10 @@ def get_model(
     if use_multi_gpu and torch.cuda.device_count() > 1:
         logger.info(f"Loading model with multi-GPU strategy: {device_map}")
 
-        # Option 1: Use Accelerate's device_map (recommended for large models)
+        # Option 1: DataParallel (best for embedding throughput when the model
+        # fits on a single GPU). Splits each batch across GPUs so multiple
+        # forward passes run in parallel.
         try:
-            model = AutoModel.from_pretrained(
-                model_name,
-                config=_load_config(model_name),
-                trust_remote_code=True,
-                device_map=device_map,
-                torch_dtype=torch_dtype,
-                low_cpu_mem_usage=low_cpu_mem_usage,
-            ).eval()
-
-            logger.info(f"Model loaded with device_map: {model.hf_device_map}")
-            return model, tokenizer, model.hf_device_map
-
-        except Exception as e:
-            logger.warning(f"Failed to use device_map, falling back to DataParallel: {e}")
-
-            # Option 2: Fallback to DataParallel
             device = torch.device("cuda:0")
             model = AutoModel.from_pretrained(
                 model_name,
@@ -185,6 +191,23 @@ def get_model(
             model = torch.nn.DataParallel(model)
             logger.info(f"Using DataParallel across {torch.cuda.device_count()} GPUs")
             return model, tokenizer, device
+
+        except Exception as e:
+            logger.warning(f"Failed to use DataParallel, falling back to device_map: {e}")
+
+            # Option 2: Use Accelerate's device_map (for very large models that
+            # do not fit on a single GPU).
+            model = AutoModel.from_pretrained(
+                model_name,
+                config=_load_config(model_name),
+                trust_remote_code=True,
+                device_map=device_map,
+                torch_dtype=torch_dtype,
+                low_cpu_mem_usage=low_cpu_mem_usage,
+            ).eval()
+
+            logger.info(f"Model loaded with device_map: {model.hf_device_map}")
+            return model, tokenizer, model.hf_device_map
 
     else:
         # Single GPU or CPU
