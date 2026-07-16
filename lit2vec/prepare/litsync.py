@@ -8,12 +8,36 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 from rich.progress import Progress
 
 from lit2vec.cli.console import console
 
 ProgressCallback = Callable[[int, int, Optional[str]], None]
+
+# Fixed output schema for prepared year-wise parquet files. Records are
+# normalized by _normalize_record; pmid-less records are dropped.
+PREPARED_SCHEMA = pa.schema(
+    [
+        ("pmid", pa.int64()),
+        ("title", pa.string()),
+        ("abstract", pa.string()),
+        ("body", pa.string()),
+        ("authors", pa.string()),
+        ("journal", pa.string()),
+        ("year", pa.int64()),
+        ("source", pa.string()),
+        ("mesh", pa.string()),
+        ("keywords", pa.string()),
+        ("source_file", pa.string()),
+        ("last_updated", pa.string()),
+    ]
+)
+
+# Records are buffered per year and flushed in batches of this size, so peak
+# memory stays bounded regardless of corpus size.
+_FLUSH_BATCH_SIZE = 5000
 
 
 def _no_op_progress(current: int, total: int, message: Optional[str] = None) -> None:
@@ -27,7 +51,9 @@ def _normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     try:
         pmid = int(raw_id)
     except (ValueError, TypeError):
-        pmid = str(raw_id)
+        # Keep the column purely Int64 (with nulls); pmid-less records are
+        # dropped in prepare_litsync_corpus since they cannot be indexed.
+        pmid = None
 
     title = record.get("title") or ""
     abstract = record.get("abstract") or ""
@@ -115,53 +141,76 @@ def prepare_litsync_corpus(
     manifest = read_manifest(corpus_dir)
     total_expected = manifest.get("total_records")
 
-    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    buffers: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    writers: dict[str, pq.ParquetWriter] = {}
+    year_counts: dict[str, int] = defaultdict(int)
     source_counts: dict[str, int] = defaultdict(int)
     processed = 0
+    skipped_no_pmid = 0
+
+    def _flush(year_label: str) -> None:
+        buf = buffers[year_label]
+        if not buf:
+            return
+        writer = writers.get(year_label)
+        if writer is None:
+            out_file = output_dir / f"{filename_prefix}_{year_label}_.parquet"
+            writer = pq.ParquetWriter(out_file, PREPARED_SCHEMA)
+            writers[year_label] = writer
+        writer.write_table(pa.Table.from_pylist(buf, schema=PREPARED_SCHEMA))
+        buffers[year_label] = []
 
     progress_callback(0, total_expected or len(jsonl_files), "Scanning corpus files...")
 
-    for file_idx, jsonl_file in enumerate(jsonl_files):
-        progress_callback(file_idx, len(jsonl_files), f"Reading {jsonl_file.name}...")
-        with open(jsonl_file, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    try:
+        for file_idx, jsonl_file in enumerate(jsonl_files):
+            progress_callback(file_idx, len(jsonl_files), f"Reading {jsonl_file.name}...")
+            with open(jsonl_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
 
-                normalized = _normalize_record(record)
-                year_label = _year_label(normalized["year"])
-                buckets[year_label].append(normalized)
-                source_counts[normalized["source"]] += 1
-                processed += 1
+                    normalized = _normalize_record(record)
+                    if normalized["pmid"] is None:
+                        skipped_no_pmid += 1
+                        continue
+                    year_label = _year_label(normalized["year"])
+                    buffers[year_label].append(normalized)
+                    year_counts[year_label] += 1
+                    source_counts[normalized["source"]] += 1
+                    processed += 1
 
-                if processed % 1000 == 0:
-                    progress_callback(
-                        processed,
-                        total_expected or processed,
-                        f"Processed {processed} records...",
-                    )
+                    if len(buffers[year_label]) >= _FLUSH_BATCH_SIZE:
+                        _flush(year_label)
 
-    progress_callback(processed, total_expected or processed, "Writing year-wise Parquet files...")
+                    if processed % 1000 == 0:
+                        progress_callback(
+                            processed,
+                            total_expected or processed,
+                            f"Processed {processed} records...",
+                        )
 
-    written_files: list[Path] = []
-    year_counts: dict[str, int] = {}
-    for year_label in sorted(buckets.keys(), key=lambda y: (y == "unknown", y)):
-        records = buckets[year_label]
-        df = pl.DataFrame(records)
-        out_file = output_dir / f"{filename_prefix}_{year_label}_.parquet"
-        df.write_parquet(out_file)
-        written_files.append(out_file)
-        year_counts[year_label] = len(records)
+        progress_callback(processed, total_expected or processed, "Writing year-wise Parquet files...")
+        for year_label in list(buffers.keys()):
+            _flush(year_label)
+    finally:
+        for writer in writers.values():
+            writer.close()
+
+    written_files: list[Path] = [
+        output_dir / f"{filename_prefix}_{label}_.parquet" for label in sorted(writers)
+    ]
 
     summary = {
         "input_dir": str(corpus_dir),
         "output_dir": str(output_dir),
         "total_records": processed,
+        "skipped_no_pmid": skipped_no_pmid,
         "year_counts": dict(sorted(year_counts.items(), key=lambda kv: (kv[0] == "unknown", kv[0]))),
         "source_counts": dict(source_counts),
         "written_files": [str(f) for f in written_files],

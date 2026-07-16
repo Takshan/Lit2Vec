@@ -78,15 +78,26 @@ def _detect_year(path: Path) -> int | None:
     return int(m.group(0)) if m else None
 
 
+def _h5_pmid_count(hf: Path, group_name: str = "pmids") -> int:
+    """Return the number of embedded PMIDs in an HDF5 file, or -1 on error."""
+    try:
+        with h5py.File(hf, "r") as f:
+            return len(f[group_name]) if group_name in f else 0
+    except Exception:
+        return -1
+
+
 def _count_embeddable_records(pq_path: Path, text_field: str) -> int:
     """Count unique PMIDs with non-empty text for the chosen embedding field strategy."""
     try:
-        df = pl.read_parquet(str(pq_path))
+        # Read only the columns needed for the text check; full reads of
+        # PMC-heavy years (large bodies) would waste a lot of IO and RAM.
+        wanted = [c for c in ("pmid", "title", "abstract", "body") if c in pl.scan_parquet(str(pq_path)).collect_schema().names()]
+        if "pmid" not in wanted:
+            return 0
+        df = pl.scan_parquet(str(pq_path)).select(wanted).collect()
     except Exception as e:
         logger.warning(f"Could not read {pq_path} for embeddable count: {e}")
-        return 0
-
-    if "pmid" not in df.columns:
         return 0
 
     def _col(name: str):
@@ -293,7 +304,13 @@ def embedding_pipeline(
         if ui is not None:
             ui.start_stage("embeddings", "Checking existing embeddings...")
 
+        # Tracks whether every year's embeddings are complete. Downstream
+        # monolithic artifacts (Annoy) are only built once this is true, so
+        # interrupted/resumed runs never freeze a partial index.
+        embeddings_complete = True
+
         if input_type == "parquet":
+            year_targets: dict[int, int] = {}
             if overwrite_embeddings:
                 years_needing_update = sorted(year_to_parquet.keys())
             else:
@@ -312,6 +329,7 @@ def embedding_pipeline(
                                 else:
                                     embedded = len(f[group_name].keys())
                                     target = _count_embeddable_records(pq_path, text_field)
+                                    year_targets[year] = target
                                     if embedded < target:
                                         needs_update = True
                         except Exception as e:
@@ -346,8 +364,27 @@ def embedding_pipeline(
                     batch_size=batch_size,
                     overwrite=overwrite_embeddings,
                     text_field=text_field,
+                    years=[str(y) for y in years_needing_update],
                     progress_callback=_embed_progress,
                 )
+                # Verify per-year completion after embedding. This catches
+                # silently skipped batches (e.g. CUDA OOM): incomplete years
+                # are picked up again on the next (resumed) run, and
+                # monolithic artifacts are deferred until then.
+                embeddings_complete = True
+                for year in years_needing_update:
+                    h5p = embeddings_dir / f"{hdf5_name}_{year}_.h5"
+                    embedded_now = _h5_pmid_count(h5p, group_name)
+                    target = year_targets.get(year)
+                    if target is None:
+                        target = _count_embeddable_records(year_to_parquet[year], text_field)
+                        year_targets[year] = target
+                    if embedded_now < target:
+                        logger.warning(
+                            f"Year {year}: embedded {embedded_now}/{target} pmids; "
+                            "year remains incomplete and will be resumed on the next run."
+                        )
+                        embeddings_complete = False
                 if ui is not None:
                     ui.end_stage(
                         "embeddings",
@@ -383,6 +420,7 @@ def embedding_pipeline(
                 if ui is not None:
                     ui.end_stage("embeddings", detail="SQL embeddings up-to-date")
                 logger.info(f"SQL embeddings already exist at {hdf5_file}. Skipping generation.")
+            embeddings_complete = hdf5_file.exists()
 
         # Map each year to its embedding file for downstream steps.
         # For SQL input the HDF5 has no year, so we store it under None.
@@ -411,19 +449,48 @@ def embedding_pipeline(
                     logger.warning(f"Failed to remove {p}: {e}")
             existing_faiss = []
 
-        if existing_faiss and not overwrite_faiss:
+        # Per-year freshness check: a year's index is rebuilt when it is
+        # missing or when its vector count no longer matches the (possibly
+        # resumed) HDF5 embedding file. This makes interrupted/resumed runs
+        # safe: an index built from a partially embedded year is not frozen.
+        def _faiss_ntotal(index_path: Path) -> int:
+            try:
+                import faiss
+
+                idx = faiss.read_index(str(index_path), faiss.IO_FLAG_MMAP)
+                return int(idx.ntotal)
+            except Exception:
+                return -1
+
+        stale_h5_files: list[Path] = []
+        for hf in sorted(h5_files):
+            y = _detect_year(hf)
+            year_label = y if y is not None else "0000"
+            index_path = faiss_dir / f"faiss_quant_{year_label}_.index"
+            if overwrite_faiss or not index_path.exists():
+                stale_h5_files.append(hf)
+                continue
+            h5_count = _h5_pmid_count(hf, group_name)
+            if h5_count < 0 or _faiss_ntotal(index_path) != h5_count:
+                logger.info(
+                    f"FAISS index for {year_label} is missing or stale "
+                    f"(h5 pmids={h5_count}); rebuilding"
+                )
+                stale_h5_files.append(hf)
+
+        if not stale_h5_files:
             if ui is not None:
                 ui.end_stage("faiss", detail="FAISS indices up-to-date")
-            logger.info(f"FAISS index already present in {faiss_dir}. Skipping build.")
+            logger.info(f"FAISS indices up-to-date in {faiss_dir}. Skipping build.")
         else:
-            _notify("faiss", 10, 100, f"Building FAISS indices from {len(h5_files)} file(s)...")
+            _notify("faiss", 10, 100, f"Building FAISS indices from {len(stale_h5_files)} file(s)...")
 
             def _faiss_progress(current: int, total: int, message: Optional[str] = ""):
                 pct = 10 + int(80 * (current / max(total, 1)))
                 _notify("faiss", pct, 100, message or "Building FAISS index...")
 
             failed_faiss = create_full_quantized_index(
-                hdf5_paths=h5_files,
+                hdf5_paths=stale_h5_files,
                 faiss_path=faiss_dir,
                 progress_callback=_faiss_progress,
             )
@@ -436,7 +503,7 @@ def embedding_pipeline(
                     ui.end_stage("faiss", status="warning", detail=f"Built with {len(faiss_failures)} warning(s)")
             else:
                 if ui is not None:
-                    ui.end_stage("faiss", detail=f"Built {len(h5_files)} index(es)")
+                    ui.end_stage("faiss", detail=f"Built {len(stale_h5_files)} index(es)")
 
         # --------------
         # Annoy indexing
@@ -449,9 +516,19 @@ def embedding_pipeline(
             annoy_path = output_dir / annoy_name
 
             if annoy_path.exists() and not overwrite_faiss and not overwrite_embeddings:
-                if ui is not None:
-                    ui.end_stage("annoy", detail="Annoy index up-to-date")
-                logger.info(f"Annoy index already exists at {annoy_path}. Skipping build.")
+                if embeddings_complete:
+                    if ui is not None:
+                        ui.end_stage("annoy", detail="Annoy index up-to-date")
+                    logger.info(f"Annoy index already exists at {annoy_path}. Skipping build.")
+                else:
+                    logger.warning(
+                        f"Removing stale Annoy index at {annoy_path}: embeddings are "
+                        "incomplete, so the index may be partial. It will be rebuilt "
+                        "once all years are embedded."
+                    )
+                    annoy_path.unlink(missing_ok=True)
+                    if ui is not None:
+                        ui.end_stage("annoy", detail="Stale Annoy index removed; deferred")
             elif not h5_files:
                 logger.warning(
                     "Cannot build Annoy index: no intermediate embeddings available. "
@@ -459,6 +536,13 @@ def embedding_pipeline(
                 )
                 if ui is not None:
                     ui.end_stage("annoy", status="warning", detail="No embeddings available")
+            elif not embeddings_complete:
+                logger.info(
+                    "Deferring Annoy index build: embeddings are incomplete "
+                    "(resumable run). The index will be built once all years are embedded."
+                )
+                if ui is not None:
+                    ui.end_stage("annoy", detail="Deferred until embeddings complete")
             else:
                 _notify("annoy", 10, 100, "Building monolithic Annoy index...")
 
@@ -492,8 +576,18 @@ def embedding_pipeline(
         faiss_pmids_dir.mkdir(parents=True, exist_ok=True)
 
         _notify("pmids", 10, 100, "Exporting FAISS PMID lists...")
+        # Only (re)export years whose FAISS index was (re)built in this run or
+        # whose PMID parquet is missing; unchanged years keep their aligned
+        # lists, which saves re-reading large HDF5 files on resumed runs.
+        stale_h5_set = set(stale_h5_files)
+        pmid_export_years: dict[int | None, Path] = {}
+        for year, hf in year_to_h5.items():
+            year_label = year if year is not None else "0000"
+            outp = faiss_pmids_dir / f"{hdf5_name}_{year_label}_.parquet"
+            if hf in stale_h5_set or not outp.exists():
+                pmid_export_years[year] = hf
         written_pmids = export_faiss_pmid_lists(
-            faiss_year_files=year_to_h5,
+            faiss_year_files=pmid_export_years,
             hdf5_name=hdf5_name,
             out_dir=faiss_pmids_dir,
         )
@@ -530,27 +624,39 @@ def embedding_pipeline(
                         except Exception as e:
                             logger.warning(f"Failed to remove {p}: {e}")
 
-            existing_bm25 = list(bm25_dir.glob("**/*"))
-
             target_years = (
                 set(year_to_parquet.keys())
                 if not overwrite_years
                 else set(overwrite_years) & set(year_to_parquet.keys())
             )
-            target_parquets = [year_to_parquet[y] for y in sorted(target_years)]
 
-            if existing_bm25 and not overwrite_bm25 and not overwrite_years:
+            # Per-year resume: a year counts as built only if its marker file
+            # exists (written after both BM25 sub-indices for that year were
+            # processed). This prevents an interrupted run from freezing a
+            # half-written per-year index forever.
+            if overwrite_bm25 or overwrite_years:
+                years_to_build = sorted(target_years)
+            else:
+                done_years = {
+                    int(m.group(1))
+                    for p in bm25_dir.glob(".bm25_done_*")
+                    if (m := re.search(r"(\d{4})", p.name))
+                }
+                years_to_build = [y for y in sorted(target_years) if y not in done_years]
+
+            if not years_to_build:
                 if ui is not None:
                     ui.end_stage("bm25", detail="BM25 indices up-to-date")
-                logger.info(f"BM25 indices already present in {bm25_dir}. Skipping build.")
+                logger.info(f"BM25 indices up-to-date in {bm25_dir}. Skipping build.")
             else:
-                _notify("bm25", 10, 100, f"Building BM25 indices for {len(target_parquets)} year(s)...")
+                _notify("bm25", 10, 100, f"Building BM25 indices for {len(years_to_build)} year(s)...")
 
                 def _bm25_progress(current: int, total: int, message: Optional[str] = ""):
                     pct = 10 + int(80 * (current / max(total, 1)))
                     _notify("bm25", pct, 100, message or "Building BM25 index...")
 
-                for fpath in target_parquets if overwrite_years else input_files:
+                for y in years_to_build:
+                    fpath = year_to_parquet[y]
                     try:
                         index_authors_core(
                             file_list=[fpath],
@@ -569,8 +675,9 @@ def embedding_pipeline(
                         logger.exception(
                             f"title_abstract index failed for {fpath} because {e}"
                         )
+                    (bm25_dir / f".bm25_done_{y}").touch()
                 if ui is not None:
-                    ui.end_stage("bm25", detail=f"Indexed {len(target_parquets)} year(s)")
+                    ui.end_stage("bm25", detail=f"Indexed {len(years_to_build)} year(s)")
         else:
             if ui is not None:
                 ui.end_stage("bm25", detail="BM25 skipped for SQL input")
@@ -737,12 +844,22 @@ def export_metadb_by_year(
 
     for year, pf in sorted(year_files.items()):
         try:
+            outp = out_root / f"pubmed_{year}_.parquet"
+            if outp.exists():
+                try:
+                    # Validate the existing file (footer read only); a file
+                    # truncated by an interrupted run fails this check and is
+                    # rebuilt below.
+                    pl.scan_parquet(outp).collect_schema()
+                    written.append(str(outp))
+                    continue
+                except Exception:
+                    logger.warning(f"{outp}: existing file unreadable; rebuilding")
             df = pl.read_parquet(pf)
             if "pmid" not in df.columns:
                 logger.warning(f"{pf}: no 'pmid' column; skipping")
                 continue
             pmid_col = df["pmid"].cast(pl.String, strict=False)
-            outp = out_root / f"pubmed_{year}_.parquet"
             pl.DataFrame({"pmid": pmid_col}).write_parquet(outp)
             written.append(str(outp))
             logger.info(f"metadb_by_year written: {outp}")

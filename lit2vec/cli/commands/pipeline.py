@@ -99,22 +99,39 @@ def run_pipeline(
             ui.start_stage("prepare", "Reading litsync corpus files...")
             prepared_dir = output_dir / ".prepared"
 
-            def _prep_callback(current: int, total: int, message: Optional[str] = ""):
-                pct = int(100 * current / max(total, 1))
-                ui.update_stage(
+            existing_prepared = (
+                sorted(prepared_dir.glob("*.parquet")) if prepared_dir.exists() else []
+            )
+            if existing_prepared:
+                # Resume case: the corpus was already normalized in a previous
+                # (interrupted) run. Reuse it instead of re-reading the whole
+                # JSONL corpus. Delete .prepared to force a fresh prepare.
+                ui.end_stage(
                     "prepare",
-                    f"{message or 'Preparing...'} ({pct}%)",
+                    detail=f"Reusing {len(existing_prepared)} prepared parquet file(s)",
                 )
+                logger = logging.getLogger("lit2vec")
+                logger.info(
+                    f"Prepared parquet files already exist in {prepared_dir}; "
+                    "skipping litsync prepare step (delete .prepared to rebuild)."
+                )
+            else:
+                def _prep_callback(current: int, total: int, message: Optional[str] = ""):
+                    pct = int(100 * current / max(total, 1))
+                    ui.update_stage(
+                        "prepare",
+                        f"{message or 'Preparing...'} ({pct}%)",
+                    )
 
-            prepare_summary = prepare_litsync_corpus(
-                corpus_dir=input_dir,
-                output_dir=prepared_dir,
-                progress_callback=_prep_callback,
-            )
-            ui.end_stage(
-                "prepare",
-                detail=f"{prepare_summary['total_records']} records, {len(prepare_summary['year_counts'])} year(s)",
-            )
+                prepare_summary = prepare_litsync_corpus(
+                    corpus_dir=input_dir,
+                    output_dir=prepared_dir,
+                    progress_callback=_prep_callback,
+                )
+                ui.end_stage(
+                    "prepare",
+                    detail=f"{prepare_summary['total_records']} records, {len(prepare_summary['year_counts'])} year(s)",
+                )
             pipeline_input_dir = prepared_dir
             pipeline_input_type = "parquet"
 

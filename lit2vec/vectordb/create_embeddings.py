@@ -445,6 +445,7 @@ def from_parquet(
     batch_size: int = 1024,
     overwrite: bool = True,
     text_field: str = "auto",
+    years: Optional[List[str]] = None,
     progress_callback: Optional[ProgressCallback] = None,
 ):
     """Stream Parquet rows in batches to minimize memory usage.
@@ -460,12 +461,22 @@ def from_parquet(
             - "body": body/full-text only
             - "title+abstract": title and abstract concatenated
             - "title+abstract+body": title, abstract, and body concatenated
+        years: Optional list of year labels (e.g. ["2024"]) to restrict
+            processing to. When given, parquet files for other years are
+            skipped entirely (important for efficient resume: completed years
+            are not re-embedded on the GPU only to be skipped at write time).
     """
     progress_callback = progress_callback or _no_op_progress
     progress_callback(0, 2, "Loading embedding model...")
     model, tokenizer, device = get_model(model_name)
     progress_callback(1, 2, "Model loaded")
     glob_out = glob(db_path + "/*.parquet")
+    if years:
+        year_set = {str(y) for y in years}
+        glob_out = [
+            p for p in glob_out if any(f"_{y}_" in Path(p).name for y in year_set)
+        ]
+        logger.info(f"Restricting embedding to years: {sorted(year_set)}")
     logger.info(f"Processing: {','.join(glob_out)}")
     error_files = "error_files.txt"
     for dump in glob_out:
@@ -603,6 +614,7 @@ def generate_embeddings_core(input_type: str, **kwargs):
                 batch_size=kwargs["batch_size"],
                 overwrite=kwargs.get("overwrite", True),
                 text_field=kwargs.get("text_field", "auto"),
+                years=kwargs.get("years"),
                 progress_callback=progress_callback,
             )
         case _:
