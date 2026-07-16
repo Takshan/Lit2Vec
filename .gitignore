@@ -194,3 +194,6 @@ cython_debug/
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+
+# Runtime artifacts
+error_files.txt
