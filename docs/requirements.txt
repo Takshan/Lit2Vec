@@ -1,0 +1,18 @@
+sphinx>=7.0
+pydata-sphinx-theme>=0.15
+myst-parser>=3.0
+sphinx-copybutton>=0.5
+sphinx-design>=0.6
+# Light runtime dependencies, installed for real so autodoc can import the
+# package. Heavy/GPU dependencies (torch, transformers, faiss, ...) are mocked
+# in conf.py instead.
+typer
+rich
+polars
+pyarrow
+h5py
+numpy
+duckdb
+bm25s
+PyStemmer
+tqdm

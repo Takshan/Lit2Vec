@@ -1,0 +1,34 @@
+/* Lit2Vec documentation custom styles */
+
+:root {
+  --lit2vec-primary: #0d9488;
+  --lit2vec-secondary: #0f172a;
+  --lit2vec-accent: #f59e0b;
+}
+
+html[data-theme="light"] {
+  --pst-color-primary: var(--lit2vec-primary);
+  --pst-color-link: var(--lit2vec-primary);
+  --pst-color-link-hover: #0f766e;
+}
+
+html[data-theme="dark"] {
+  --pst-color-primary: #2dd4bf;
+  --pst-color-link: #5eead4;
+  --pst-color-link-hover: #99f6e4;
+}
+
+/* Improve readability */
+.bd-main .bd-content .bd-article-container {
+  max-width: 1000px;
+}
+
+/* API reference styling */
+.sig-name {
+  font-weight: 600;
+}
+
+.sig-param {
+  font-style: normal;
+  color: var(--pst-color-text-muted);
+}

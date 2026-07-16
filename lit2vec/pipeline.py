@@ -169,6 +169,8 @@ def embedding_pipeline(
     The final output tree matches the structure documented in
     ``sample_output/OUTPUT_STRUCTURE.md``:
 
+    .. code-block:: text
+
         output_dir/
         ├── config.json
         ├── <model>.ann                          # monolithic Annoy index

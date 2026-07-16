@@ -63,7 +63,13 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 tests = ["pytest", "pytest-cov"]
-docs = ["sphinx", "sphinx_rtd_theme", "sphinx-gallery"]
+docs = [
+    "sphinx>=7.0",
+    "pydata-sphinx-theme>=0.15",
+    "myst-parser>=3.0",
+    "sphinx-copybutton>=0.5",
+    "sphinx-design>=0.6",
+]
 
 [project.urls]
 homepage = "https://github.com/takshan/lit2vec"
