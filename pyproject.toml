@@ -103,7 +103,7 @@ tests = { features = ["tests"], solve-group = "default" }
 [tool.pixi.tasks]
 
 [tool.pixi.dependencies]
-pip = ">=25.2,<26"
+pip = ">=26.2,<27"
 python = "3.12.*"
 faiss = ">=1.9.0,<2"
 pandas = "==2.3.1"
