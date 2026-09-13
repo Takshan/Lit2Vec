@@ -43,7 +43,7 @@ dependencies = [
     "typer",
     "rich",
     "torch",
-    "transformers<4.50,>=4.40",
+    "transformers<5.11,>=5.10.1",
     "accelerate",
     "xformers",
     "faiss-cpu",
