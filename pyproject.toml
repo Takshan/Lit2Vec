@@ -106,6 +106,6 @@ tests = { features = ["tests"], solve-group = "default" }
 pip = ">=25.2,<26"
 python = "3.12.*"
 faiss = ">=1.9.0,<2"
-pandas = "==2.3.1"
+pandas = "==3.0.6"
 bm25s = "==0.2.8"
 faiss-gpu = ">=1.9.0,<2"
