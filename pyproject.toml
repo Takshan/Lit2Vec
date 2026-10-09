@@ -104,7 +104,7 @@ tests = { features = ["tests"], solve-group = "default" }
 
 [tool.pixi.dependencies]
 pip = ">=25.2,<26"
-python = "3.12.*"
+python = "3.15.*"
 faiss = ">=1.9.0,<2"
 pandas = "==2.3.1"
 bm25s = "==0.2.8"
